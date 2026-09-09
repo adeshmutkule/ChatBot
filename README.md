@@ -58,3 +58,4 @@ npm start
 
 `npm run build` creates the Vite client bundle in `dist`. For a production deployment, serve the built client with your preferred static host and run the API server with the same `GEMINI_API_KEY` environment variable. Add a reverse proxy from `/api` to port `3001`.
 "# ChatBot" 
+"# adeshchatbot" 
