@@ -154,20 +154,20 @@ function SettingsPanel({ settings, setSettings, onClose }) {
   return <div className="settings-panel"><div className="settings-header"><div><span className="eyebrow">Workspace</span><h2>Settings</h2></div><button className="icon-button" onClick={onClose}><X size={18} /></button></div><div className="settings-group"><span className="settings-label">Appearance</span><div className="theme-options"><button className={settings.theme === 'light' ? 'selected' : ''} onClick={() => update('theme', 'light')}><Sun size={16} /> Light</button><button className={settings.theme === 'dark' ? 'selected' : ''} onClick={() => update('theme', 'dark')}><Moon size={16} /> Dark</button></div></div><div className="settings-group"><span className="settings-label">Response model</span><div className="select-field"><select value="gemini-3.6-flash" onChange={(event) => update('model', event.target.value)}><option value="gemini-3.6-flash">Gemini 3.6 Flash</option></select><ChevronDown size={15} /></div></div><div className="settings-group setting-row"><div><span className="settings-label">Compact messages</span><small>Use tighter spacing in conversations</small></div><button className={`toggle ${settings.compact ? 'on' : ''}`} onClick={() => update('compact', !settings.compact)}><span /></button></div><div className="settings-note"><Bot size={17} /><p>Your preferences are saved locally in this browser.</p></div></div>;
 }
 
-function AuthPanel({ onClose, onAuth, authError, forceLogin = false }) {
+function AuthPanel({ onClose, onAuth, authError, forceLogin = false, forceRegister = false }) {
   const [registering, setRegistering] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [avatar, setAvatar] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  useEffect(() => { if (forceLogin) setRegistering(false); }, [forceLogin]);
+  useEffect(() => { if (forceRegister) setRegistering(true); else if (forceLogin) setRegistering(false); }, [forceLogin, forceRegister]);
   const submit = async () => {
     setSubmitting(true);
     await onAuth({ email, password, registering, avatar });
     setSubmitting(false);
   };
   const handleAvatar = (event) => { const file = event.target.files?.[0]; if (!file) return; if (!file.type.startsWith('image/')) return; if (file.size > 4 * 1024 * 1024) return; const reader = new FileReader(); reader.onload = () => setAvatar(String(reader.result)); reader.readAsDataURL(file); };
-  return <div className={`auth-panel ${forceLogin ? 'auth-page' : ''}`}><div className="auth-card">{!forceLogin && <button className="icon-button auth-close" onClick={onClose} disabled={submitting}><X size={18} /></button>}<BrandLogo full className="auth-logo" /><div className="welcome-mark auth-mark">{registering && avatar ? <img className="auth-photo-preview" src={avatar} alt="Profile preview" /> : <Sparkles size={22} />}</div><span className="eyebrow">Adesh workspace</span><h2>{registering ? 'Create your account' : 'Welcome back'}</h2><p>{registering ? 'Save your conversations and pick up anywhere.' : 'Sign in to sync your conversations securely.'}</p><form onSubmit={(event) => { event.preventDefault(); submit(); }}><input type="email" placeholder="Email address" value={email} onChange={(event) => setEmail(event.target.value)} required disabled={submitting} /><input type="password" placeholder="Password (6+ characters)" value={password} onChange={(event) => setPassword(event.target.value)} minLength="6" required disabled={submitting} />{registering && <label className="photo-upload">{avatar ? 'Change profile photo' : 'Upload profile photo'}<input type="file" accept="image/png,image/jpeg,image/webp" onChange={handleAvatar} disabled={submitting} /></label>}{authError && <div className="auth-error">{authError}</div>}<button className="auth-submit" type="submit" disabled={submitting}><LogIn size={16} /> {submitting ? 'Please wait...' : registering ? 'Create account' : 'Sign in'}</button></form><button className="auth-switch" onClick={() => setRegistering(!registering)} disabled={submitting}>{registering ? 'Already have an account? Sign in' : 'New here? Create an account'}</button></div></div>;
+  return <div className={`auth-panel ${forceLogin || forceRegister ? 'auth-page' : ''}`}><div className="auth-card">{!forceLogin && !forceRegister && <button className="icon-button auth-close" onClick={onClose} disabled={submitting}><X size={18} /></button>}<BrandLogo full className="auth-logo" /><div className="welcome-mark auth-mark">{registering && avatar ? <img className="auth-photo-preview" src={avatar} alt="Profile preview" /> : <Sparkles size={22} />}</div><span className="eyebrow">Adesh workspace</span><h2>{registering ? 'Create your account' : 'Welcome back'}</h2><p>{registering ? 'Save your conversations and pick up anywhere.' : 'Sign in to sync your conversations securely.'}</p><form onSubmit={(event) => { event.preventDefault(); submit(); }}><input type="email" placeholder="Email address" value={email} onChange={(event) => setEmail(event.target.value)} required disabled={submitting} /><input type="password" placeholder="Password (6+ characters)" value={password} onChange={(event) => setPassword(event.target.value)} minLength="6" required disabled={submitting} />{registering && <label className="photo-upload">{avatar ? 'Change profile photo' : 'Upload profile photo'}<input type="file" accept="image/png,image/jpeg,image/webp" onChange={handleAvatar} disabled={submitting} /></label>}{authError && <div className="auth-error">{authError}</div>}<button className="auth-submit" type="submit" disabled={submitting}><LogIn size={16} /> {submitting ? 'Please wait...' : registering ? 'Create account' : 'Sign in'}</button></form><button className="auth-switch" onClick={() => setRegistering(!registering)} disabled={submitting}>{registering ? 'Already have an account? Sign in' : 'New here? Create an account'}</button></div></div>;
 }
 
 function ProfileSettings({ auth, onAuthUpdate, showToast }) {
@@ -194,7 +194,7 @@ function App() {
   const [attachments, setAttachments] = useState([]);
   const [documentQuery, setDocumentQuery] = useState('');
   const [authOpen, setAuthOpen] = useState(false);
-  const [forceLogin, setForceLogin] = useState(false);
+  const [forceLogin, setForceLogin] = useState(() => !localStorage.getItem('adesh-auth'));
   const [auth, setAuth] = useState(() => JSON.parse(localStorage.getItem('adesh-auth') || 'null'));
   const [authError, setAuthError] = useState('');
   const [recording, setRecording] = useState(false);
@@ -299,7 +299,7 @@ function App() {
   };
   const updateAuth = (data) => setAuth(data);
 
-  if (forceLogin) return <AuthPanel onClose={() => {}} onAuth={handleAuth} authError={authError} forceLogin />;
+  if (forceLogin) return <AuthPanel onClose={() => {}} onAuth={handleAuth} authError={authError} forceRegister />;
 
   return <div className={`app-shell ${settings.compact ? 'compact' : ''}`}>
     <Sidebar conversations={conversations} activeId={activeId} onSelect={setActiveId} onNew={newChat} onDelete={deleteConversation} onRename={renameConversation} onPin={pinConversation} onSettings={() => setSettingsOpen(true)} mobileOpen={mobileOpen} onClose={() => setMobileOpen(false)} auth={auth} onAuth={() => { setAuthError(''); setForceLogin(false); setAuthOpen(true); }} onLogout={logout} search={search} setSearch={setSearch} />
