@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 500">
+  <rect width="720" height="500" fill="#031a3d"/>
+  <g transform="translate(210 72)">
+    <path fill="#fff" d="M150 0c-8 0-15 6-15 14v15C97 34 69 57 69 96v17c0 17 12 31 28 34l-1 25 30-19h50l30 19-1-25c16-3 28-17 28-34V96c0-39-28-62-66-67V14c0-8-7-14-15-14Zm-78 96c0-12 8-22 18-22v45c-10 0-18-10-18-23Zm156 0c0 13-8 23-18 23V74c10 0 18 10 18 22Z"/>
+    <path fill="#031a3d" d="M99 67c0-25 18-39 51-39s51 14 51 39v28c0 25-18 39-51 39s-51-14-51-39V67Z"/>
+    <rect x="120" y="67" width="18" height="31" rx="9" fill="#10e7e4"/><rect x="162" y="67" width="18" height="31" rx="9" fill="#10e7e4"/>
+    <path fill="#fff" d="M150-13c-7 0-12 5-12 12s5 12 12 12 12-5 12-12-5-12-12-12Zm-4 24h8v21h-8z"/>
+  </g>
+  <text x="360" y="390" fill="#fff" font-family="Arial,sans-serif" font-size="70" font-weight="700" text-anchor="middle">ChatBot</text>
+</svg>
