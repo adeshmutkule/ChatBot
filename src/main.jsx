@@ -25,8 +25,10 @@ import {
   RefreshCw,
   Settings,
   Search,
+  Share2,
   Sparkles,
   Sun,
+  Square,
   Volume2,
   Trash2,
   X,
@@ -36,6 +38,8 @@ import './styles.css';
 
 const STORAGE_KEY = 'arc-chat-conversations';
 const SETTINGS_KEY = 'arc-chat-settings';
+const sharedConversationId = new URLSearchParams(window.location.search).get('chat');
+const sharedShareId = new URLSearchParams(window.location.search).get('share');
 const uid = () => crypto.randomUUID();
 
 const suggestions = [
@@ -200,9 +204,13 @@ function App() {
   const [recording, setRecording] = useState(false);
   const [search, setSearch] = useState('');
   const [toast, setToast] = useState('');
+  const [online, setOnline] = useState(() => navigator.onLine);
   const endRef = useRef(null);
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
+  const abortRef = useRef(null);
+  const recognitionRef = useRef(null);
+  const voiceInputRef = useRef('');
   const activeConversation = conversations.find((item) => item.id === activeId) || conversations[0];
   const messages = activeConversation?.messages || [];
 
@@ -212,13 +220,19 @@ function App() {
   useEffect(() => { document.documentElement.dataset.theme = settings.theme; }, [settings.theme]);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, isLoading]);
   useEffect(() => {
+    const setConnection = () => setOnline(navigator.onLine);
+    window.addEventListener('online', setConnection);
+    window.addEventListener('offline', setConnection);
+    return () => { window.removeEventListener('online', setConnection); window.removeEventListener('offline', setConnection); };
+  }, []);
+  useEffect(() => {
     if (!auth?.token) return;
     const headers = { Authorization: `Bearer ${auth.token}`, 'Content-Type': 'application/json' };
     const localConversations = conversations.filter((conversation) => conversation.messages.length);
-    Promise.all(localConversations.map((conversation) => fetch('/api/conversations', {
+    localConversations.forEach((conversation) => fetch('/api/conversations', {
       method: 'POST', headers, body: JSON.stringify({ id: conversation.id, messages: conversation.messages })
-    })))
-      .then(() => fetch('/api/conversations', { headers }))
+    }).catch(() => {}));
+    fetch('/api/conversations', { headers })
       .then((response) => response.ok ? response.json() : [])
       .then((remoteConversations) => {
         if (!Array.isArray(remoteConversations) || !remoteConversations.length) {
@@ -229,13 +243,26 @@ function App() {
         }
         const loaded = remoteConversations.map(normalizeConversation);
         setConversations(loaded);
-        setActiveId(loaded[0].id);
+        setActiveId(loaded.find((conversation) => conversation.id === sharedConversationId)?.id || loaded[0].id);
       })
       .catch(() => {
         const fresh = makeConversation();
         setConversations([fresh]);
         setActiveId(fresh.id);
       });
+  }, [auth?.token]);
+  useEffect(() => {
+    if (!auth?.token || !sharedShareId) return;
+    fetch(`/api/shares/${encodeURIComponent(sharedShareId)}`, { headers: { Authorization: `Bearer ${auth.token}` } })
+      .then((response) => response.ok ? response.json() : null)
+      .then((shared) => {
+        if (!shared?.messages?.length) return;
+        const conversation = normalizeConversation({ ...shared, id: `shared-${shared.id}`, createdAt: Date.now() });
+        setConversations((current) => current.some((item) => item.id === conversation.id) ? current : [conversation, ...current]);
+        setActiveId(conversation.id);
+        showToast('Shared chat opened');
+      })
+      .catch(() => showToast('Could not open shared chat.'));
   }, [auth?.token]);
 
   const updateConversation = (id, updater) => setConversations((current) => current.map((conversation) => conversation.id === id ? updater(conversation) : conversation));
@@ -246,39 +273,47 @@ function App() {
   const pinConversation = async (conversation) => { const pinned = !conversation.pinned; updateConversation(conversation.id, (current) => ({ ...current, pinned })); if (auth?.token) await fetch(`/api/conversations/${conversation.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.token}` }, body: JSON.stringify({ pinned }) }); showToast(pinned ? 'Conversation pinned' : 'Conversation unpinned'); };
   const clearChat = () => updateConversation(activeId, (conversation) => ({ ...conversation, messages: [], title: 'New conversation' }));
 
+  const stopGenerating = () => { abortRef.current?.abort(); };
   const sendMessage = async (messageText = input, regenerate = false) => {
     const text = messageText.trim();
     if ((!text && !attachments.length) || isLoading) return;
     const requestText = text || 'Please analyze the attached file and describe the important details.';
-    const priorMessages = regenerate ? messages.slice(0, -1) : messages;
+    const priorMessages = regenerate ? messages.slice(0, Math.max(0, messages.length - 1)) : messages;
     const userMessage = { id: uid(), role: 'user', content: requestText, createdAt: Date.now() };
     const nextMessages = regenerate ? [...priorMessages, userMessage] : [...messages, userMessage];
     updateConversation(activeId, (conversation) => ({ ...conversation, messages: nextMessages, title: conversation.messages.length ? conversation.title : text.slice(0, 34) }));
     setInput(''); setIsLoading(true);
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
-      const response = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(auth?.token ? { Authorization: `Bearer ${auth.token}` } : {}) }, body: JSON.stringify({ messages: nextMessages, model: settings.model, mode, attachments, conversationId: activeId, conversationTitle: activeConversation?.messages.length ? activeConversation.title : requestText.slice(0, 34), pinned: activeConversation?.pinned }) });
+      const response = await fetch('/api/chat', { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json', ...(auth?.token ? { Authorization: `Bearer ${auth.token}` } : {}) }, body: JSON.stringify({ messages: nextMessages, model: settings.model, mode, attachments, conversationId: activeId, conversationTitle: activeConversation?.messages.length ? activeConversation.title : requestText.slice(0, 34), pinned: activeConversation?.pinned }) });
       if (!response.ok) { const data = await response.json().catch(() => ({})); throw new Error(data.error || 'Unable to reach Gemini.'); }
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let assistantText = '';
+      let renderTimer = null;
       const assistantId = uid();
+      const renderAssistantMessage = () => updateConversation(activeId, (conversation) => ({ ...conversation, messages: conversation.messages.map((message) => message.id === assistantId ? { ...message, content: assistantText } : message) }));
+      const scheduleAssistantRender = () => { if (renderTimer) return; renderTimer = window.setTimeout(() => { renderTimer = null; renderAssistantMessage(); }, 50); };
       updateConversation(activeId, (conversation) => ({ ...conversation, messages: [...conversation.messages, { id: assistantId, role: 'assistant', content: '', createdAt: Date.now() }] }));
-      while (true) { const { value, done } = await reader.read(); if (done) break; assistantText += decoder.decode(value, { stream: true }); updateConversation(activeId, (conversation) => ({ ...conversation, messages: conversation.messages.map((message) => message.id === assistantId ? { ...message, content: assistantText } : message) })); }
+      while (true) { const { value, done } = await reader.read(); if (done) break; assistantText += decoder.decode(value, { stream: true }); scheduleAssistantRender(); }
+      if (renderTimer) window.clearTimeout(renderTimer);
       updateConversation(activeId, (conversation) => ({
         ...conversation,
         messages: conversation.messages.map((message) => message.id === assistantId ? { ...message, content: assistantText } : message)
       }));
       setAttachments([]);
     } catch (error) {
-      updateConversation(activeId, (conversation) => ({ ...conversation, messages: [...conversation.messages, { id: uid(), role: 'assistant', isError: true, content: `**Something went wrong**\n\n${error.message}\n\nPlease check your connection and try again.`, createdAt: Date.now() }] }));
-    } finally { setIsLoading(false); }
+      if (error.name !== 'AbortError') updateConversation(activeId, (conversation) => ({ ...conversation, messages: [...conversation.messages, { id: uid(), role: 'assistant', isError: true, content: online ? `**Something went wrong**\n\n${error.message}\n\nPlease check your connection and try again.` : '**You are offline**\n\nReconnect to the internet and try again.', createdAt: Date.now() }] }));
+    } finally { abortRef.current = null; setIsLoading(false); }
   };
 
   const handleKeyDown = (event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); } };
   const regenerate = () => { const lastUser = [...messages].reverse().find((message) => message.role === 'user'); if (lastUser) sendMessage(lastUser.content, true); };
   const handleFiles = (event) => { Array.from(event.target.files || []).slice(0, 3).forEach((file) => { const isText = file.type.startsWith('text/') || /\.(md|csv|json|xml|js|jsx|ts|tsx|css|html|sql)$/i.test(file.name); const reader = new FileReader(); reader.onload = () => { const result = String(reader.result); const data = result.startsWith('data:') ? result.split(',')[1] : btoa(unescape(encodeURIComponent(result))); setAttachments((current) => [...current, { name: file.name, mimeType: file.type || 'application/octet-stream', data, content: isText ? result : '', previewUrl: result.startsWith('data:image/') ? result : '' }]); }; if (isText) reader.readAsText(file); else reader.readAsDataURL(file); }); event.target.value = ''; };
-  const startVoice = () => { const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition; if (!Recognition) return; const recognition = new Recognition(); recognition.lang = mode === 'marathi' ? 'mr-IN' : 'en-US'; recognition.onstart = () => setRecording(true); recognition.onend = () => setRecording(false); recognition.onresult = (event) => setInput((current) => `${current}${current ? ' ' : ''}${event.results[0][0].transcript}`); recognition.start(); };
+  const startVoice = () => { const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition; if (!Recognition) return showToast('Voice input is not supported in this browser.'); if (recording) { recognitionRef.current?.stop(); return; } const recognition = new Recognition(); recognition.continuous = true; recognition.interimResults = true; recognition.lang = mode === 'marathi' ? 'mr-IN' : 'en-US'; voiceInputRef.current = input; recognition.onstart = () => setRecording(true); recognition.onend = () => { recognitionRef.current = null; setRecording(false); }; recognition.onerror = () => { recognitionRef.current = null; setRecording(false); showToast('Voice input stopped.'); }; recognition.onresult = (event) => { const transcript = Array.from(event.results).map((result) => result[0].transcript).join(''); setInput(`${voiceInputRef.current}${voiceInputRef.current && transcript ? ' ' : ''}${transcript}`); }; recognitionRef.current = recognition; recognition.start(); };
   const speak = (text) => { if (!window.speechSynthesis) return; window.speechSynthesis.cancel(); const utterance = new SpeechSynthesisUtterance(text.replace(/[*#`]/g, '')); utterance.lang = mode === 'marathi' ? 'mr-IN' : 'en-US'; utterance.rate = mode === 'marathi' ? .92 : 1; window.speechSynthesis.speak(utterance); };
+  const shareConversation = async () => { if (!auth?.token || !activeConversation?.messages.length) return showToast('Sign in and start a chat before sharing.'); try { const response = await fetch('/api/shares', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.token}` }, body: JSON.stringify({ title: activeConversation.title, messages: activeConversation.messages }) }); const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error(data.error || 'Could not create share link.'); const url = `${window.location.origin}${window.location.pathname}?share=${encodeURIComponent(data.id)}`; if (navigator.share) await navigator.share({ title: activeConversation.title || 'Adesh chat', text: 'Open this Adesh chat', url }); else { await navigator.clipboard.writeText(url); showToast('Chat link copied'); } } catch (error) { if (error.name !== 'AbortError') showToast(error.message || 'Could not share this chat.'); } };
   const handleAuth = async ({ email, password, registering, avatar }) => {
     setAuthError('');
     try {
@@ -305,13 +340,14 @@ function App() {
     <Sidebar conversations={conversations} activeId={activeId} onSelect={setActiveId} onNew={newChat} onDelete={deleteConversation} onRename={renameConversation} onPin={pinConversation} onSettings={() => setSettingsOpen(true)} mobileOpen={mobileOpen} onClose={() => setMobileOpen(false)} auth={auth} onAuth={() => { setAuthError(''); setForceLogin(false); setAuthOpen(true); }} onLogout={logout} search={search} setSearch={setSearch} />
     {mobileOpen && <button className="sidebar-scrim" onClick={() => setMobileOpen(false)} aria-label="Close sidebar" />}
     <main className="main-content">
-      <header className="topbar"><button className="icon-button menu-button" onClick={() => setMobileOpen(true)}><Menu size={20} /></button><div className="mobile-title"><BrandLogo className="mobile-logo" /><strong>Adesh</strong></div><div className="topbar-title"><span className="status-dot" /> Adesh AI <span className="slash">/</span> <strong>{activeConversation?.title}</strong></div><div className="topbar-actions"><button className="clear-button" onClick={clearChat}><Trash2 size={15} /> Clear chat</button><button className="icon-button" onClick={() => setSettingsOpen(true)} title="Settings"><Settings size={18} /></button></div></header>
+      {!online && <div className="offline-banner" role="status">You are offline. Messages will work again when you reconnect.</div>}
+      <header className="topbar"><button className="icon-button menu-button" onClick={() => setMobileOpen(true)}><Menu size={20} /></button><div className="mobile-title"><BrandLogo className="mobile-logo" /><strong>Adesh</strong></div><div className="topbar-title"><span className="status-dot" /> Adesh AI <span className="slash">/</span> <strong>{activeConversation?.title}</strong></div><div className="topbar-actions"><button className="clear-button" onClick={clearChat}><Trash2 size={15} /> Clear chat</button><button className="icon-button" onClick={shareConversation} title="Share chat"><Share2 size={18} /></button><button className="icon-button" onClick={() => setSettingsOpen(true)} title="Settings"><Settings size={18} /></button></div></header>
       {settingsOpen ? <><SettingsPanel settings={settings} setSettings={setSettings} onClose={() => setSettingsOpen(false)} />{auth && <ProfileSettings auth={auth} onAuthUpdate={updateAuth} showToast={showToast} />}</> : <>
         <section className="chat-area"><div className="chat-inner">
           {!messages.length && <div className="welcome"><BrandLogo className="welcome-logo" /><span className="eyebrow">Your thinking partner</span><h1>Hello! <span>👋</span><br />How can I help you today?</h1><p>Ask anything, explore an idea, or get a fresh perspective on your work.</p><div className="suggestions">{suggestions.map((suggestion, index) => <button key={suggestion.label} className={`suggestion-card suggestion-${index}`} onClick={() => { setInput(suggestion.text); textareaRef.current?.focus(); }}><span>{['✦', '</>', 'Aa', '≡'][index]}</span><strong>{suggestion.label}</strong><ArrowUp size={14} /></button>)}</div></div>}
           {!!messages.length && <div className="messages">{messages.map((message, index) => <Message key={message.id} message={message} isLast={index === messages.length - 1 && message.role === 'assistant'} onRegenerate={regenerate} onSpeak={speak} />)}{isLoading && <TypingIndicator />}<div ref={endRef} /></div>}
         </div></section>
-        <div className="composer-wrap"><div className="composer-tools"><div className="mode-picker"><span>Adesh mode</span><select value={mode} onChange={(event) => setMode(event.target.value)}><option value="general">General</option><option value="marathi">Marathi assistant</option><option value="coding">Coding assistant</option><option value="business">Business advisor</option></select><ChevronDown size={13} /></div></div><div className="composer"><textarea ref={textareaRef} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={handleKeyDown} placeholder="Message Adesh..." rows="1" /><div className="composer-footer"><div className="composer-left"><input ref={fileInputRef} type="file" accept="*/*" multiple hidden onChange={handleFiles} /><button className="tool-button" onClick={() => fileInputRef.current?.click()} title="Attach any file"><Paperclip size={16} /> Attach</button><button className={`tool-button ${recording ? 'recording' : ''}`} onClick={startVoice} title="Use voice input"><Mic size={16} /> {recording ? 'Listening' : 'Voice'}</button><span className="keyboard-hint"><span className="shortcut">Shift</span> + <span className="shortcut">Enter</span></span></div><button className="send-button" onClick={() => sendMessage()} disabled={(!input.trim() && !attachments.length) || isLoading} title="Send message"><ArrowUp size={18} /></button></div>{attachments.length > 0 && <div className="attachment-list">{attachments.map((attachment) => <span key={attachment.name}><Paperclip size={12} /> {attachment.name}</span>)}</div>}</div><div className="disclaimer">Adesh can make mistakes. Check important information.</div></div>
+        <div className="composer-wrap"><div className="composer-tools"><div className="mode-picker"><span>Adesh mode</span><select value={mode} onChange={(event) => setMode(event.target.value)}><option value="general">General</option><option value="marathi">Marathi assistant</option><option value="coding">Coding assistant</option><option value="business">Business advisor</option></select><ChevronDown size={13} /></div></div><div className="composer"><textarea ref={textareaRef} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={handleKeyDown} placeholder="Message Adesh..." rows="1" /><div className="composer-footer"><div className="composer-left"><input ref={fileInputRef} type="file" accept="*/*" multiple hidden onChange={handleFiles} /><button className="tool-button" onClick={() => fileInputRef.current?.click()} title="Attach any file"><Paperclip size={16} /> Attach</button><button className={`tool-button ${recording ? 'recording' : ''}`} onClick={startVoice} title="Use voice input"><Mic size={16} /> {recording ? 'Stop voice' : mode === 'marathi' ? 'Marathi voice' : 'Voice'}</button><span className="keyboard-hint"><span className="shortcut">Shift</span> + <span className="shortcut">Enter</span></span></div>{isLoading ? <button className="send-button stop-button" onClick={stopGenerating} title="Stop generating"><Square size={15} fill="currentColor" /></button> : <button className="send-button" onClick={() => sendMessage()} disabled={(!input.trim() && !attachments.length) || !online} title="Send message"><ArrowUp size={18} /></button>}</div>{attachments.length > 0 && <div className="attachment-list">{attachments.map((attachment) => <span key={attachment.name}><Paperclip size={12} /> {attachment.name}</span>)}</div>}</div><div className="disclaimer">Adesh can make mistakes. Check important information.</div></div>
       </>}
     </main>
     {authOpen && <AuthPanel onClose={() => setAuthOpen(false)} onAuth={handleAuth} authError={authError} forceLogin={forceLogin} />}

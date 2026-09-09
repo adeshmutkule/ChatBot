@@ -62,6 +62,16 @@ const connection = await mysql.createConnection({
       CONSTRAINT chats_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     )
   `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS shared_chats (
+      id CHAR(36) PRIMARY KEY,
+      user_id CHAR(36) NOT NULL,
+      title VARCHAR(255) NOT NULL DEFAULT 'Shared conversation',
+      messages JSON NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT shared_chats_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
   const [chatColumns] = await db.query("SELECT column_name FROM information_schema.columns WHERE table_schema = ? AND table_name = 'chats'", [databaseName]);
   const chatColumnNames = new Set(chatColumns.map((column) => column.column_name));
   if (!chatColumnNames.has('title')) await db.query("ALTER TABLE chats ADD COLUMN title VARCHAR(255) NOT NULL DEFAULT 'New conversation' AFTER messages");
@@ -171,6 +181,23 @@ app.delete('/api/conversations/:id', async (req, res) => {
   if (!user) return res.status(401).json({ error: 'Sign in to delete conversations.' });
   const [result] = await db.query('DELETE FROM chats WHERE id = ? AND user_id = ?', [req.params.id, user.id]);
   return result.affectedRows ? res.status(204).end() : res.status(404).json({ error: 'Conversation not found.' });
+});
+
+app.post('/api/shares', async (req, res) => {
+  const user = getUser(req);
+  const { title = 'Shared conversation', messages } = req.body;
+  if (!user) return res.status(401).json({ error: 'Sign in to share conversations.' });
+  if (!Array.isArray(messages) || !messages.length) return res.status(400).json({ error: 'There is no conversation to share.' });
+  const id = crypto.randomUUID();
+  await db.query('INSERT INTO shared_chats (id, user_id, title, messages) VALUES (?, ?, ?, ?)', [id, user.id, String(title).slice(0, 255), JSON.stringify(messages)]);
+  return res.status(201).json({ id });
+});
+
+app.get('/api/shares/:id', async (req, res) => {
+  if (!getUser(req)) return res.status(401).json({ error: 'Sign in to open shared conversations.' });
+  const [rows] = await db.query('SELECT id, title, messages FROM shared_chats WHERE id = ?', [req.params.id]);
+  if (!rows[0]) return res.status(404).json({ error: 'Shared conversation not found.' });
+  return res.json({ ...rows[0], messages: typeof rows[0].messages === 'string' ? JSON.parse(rows[0].messages) : rows[0].messages });
 });
 
 app.post('/api/chat', async (req, res) => {
