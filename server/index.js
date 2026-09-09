@@ -20,18 +20,24 @@ const db = mysql.createPool({
   user: process.env.DB_USER || 'root',
   password: process.env.DB_PASSWORD || '',
   database: databaseName,
+  ssl: {
+    minVersion: 'TLSv1.2'
+  },
   waitForConnections: true,
   connectionLimit: 10
 });
 const projectRoot = path.dirname(fileURLToPath(import.meta.url));
 
 async function initializeDatabase() {
-  const connection = await mysql.createConnection({
-    host: process.env.DB_HOST || '127.0.0.1',
-    port: Number(process.env.DB_PORT) || 3306,
-    user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD || ''
-  });
+const connection = await mysql.createConnection({
+  host: process.env.DB_HOST || '127.0.0.1',
+  port: Number(process.env.DB_PORT) || 3306,
+  user: process.env.DB_USER || 'root',
+  password: process.env.DB_PASSWORD || '',
+  ssl: {
+    minVersion: 'TLSv1.2'
+  }
+});
   await connection.query(`CREATE DATABASE IF NOT EXISTS \`${databaseName.replace(/[^a-zA-Z0-9_]/g, '')}\``);
   await connection.end();
   await db.query(`
@@ -250,3 +256,5 @@ initializeDatabase()
     console.error('MySQL connection failed:', error.message);
     process.exitCode = 1;
   });
+
+
